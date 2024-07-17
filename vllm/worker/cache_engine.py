@@ -1,7 +1,7 @@
 """CacheEngine class for managing the KV cache."""
 from typing import List
 
-import torch
+import torch, os
 
 from vllm.attention import get_attn_backend
 from vllm.config import CacheConfig, ModelConfig, ParallelConfig
@@ -77,6 +77,14 @@ class CacheEngine:
                             pin_memory=pin_memory,
                             device=device))
         return kv_cache
+
+    def print_gpu_memory(self,stage):
+        logger.info(f'GPU memory at stage {stage}')
+        torch.cuda.synchronize()
+        n_gpus = torch.cuda.device_count()
+        for i in range(n_gpus):
+            free, total = torch.cuda.mem_get_info(i)
+            logger.info(f'\t GPU {i}: free {free} used {total-free} total {total}')
 
     def swap_in(self, src_to_dst: torch.Tensor) -> None:
         for i in range(self.num_layers):

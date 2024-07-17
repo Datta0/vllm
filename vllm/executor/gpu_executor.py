@@ -1,5 +1,5 @@
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
-
+import torch
 from vllm.executor.executor_base import ExecutorAsyncBase, ExecutorBase
 from vllm.logger import init_logger
 from vllm.lora.request import LoRARequest
@@ -10,6 +10,14 @@ from vllm.worker.worker_base import WorkerWrapperBase
 
 logger = init_logger(__name__)
 
+
+def print_gpu_memory(stage):
+    logger.info(f'GPU memory at stage {stage}')
+    torch.cuda.synchronize()
+    n_gpus = torch.cuda.device_count()
+    for i in range(n_gpus):
+        free, total = torch.cuda.mem_get_info(i)
+        logger.info(f'\t GPU {i}: free {free} used {total-free} total {total}')
 
 class GPUExecutor(ExecutorBase):
 
@@ -82,8 +90,9 @@ class GPUExecutor(ExecutorBase):
         # remains to abstract away the device for non-GPU configurations.
         logger.info("# GPU blocks: %d, # CPU blocks: %d", num_gpu_blocks,
                     num_cpu_blocks)
-
+        print_gpu_memory("before cache init")
         self.driver_worker.initialize_cache(num_gpu_blocks, num_cpu_blocks)
+        print_gpu_memory("after cache init")
 
     def execute_model(
         self, execute_model_req: ExecuteModelRequest

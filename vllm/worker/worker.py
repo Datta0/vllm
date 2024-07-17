@@ -21,6 +21,13 @@ from vllm.worker.embedding_model_runner import EmbeddingModelRunner
 from vllm.worker.model_runner import ModelRunner
 from vllm.worker.worker_base import WorkerBase
 
+def print_gpu_memory(stage):
+    print(f'GPU memory at stage {stage}')
+    torch.cuda.synchronize()
+    n_gpus = torch.cuda.device_count()
+    for i in range(n_gpus):
+        free, total = torch.cuda.mem_get_info(i)
+        print(f'\t GPU {i}: free {free} used {total-free} total {total}')
 
 class Worker(WorkerBase):
     """A worker class that executes (a partition of) the model on a GPU.
@@ -107,6 +114,7 @@ class Worker(WorkerBase):
             _check_if_gpu_supports_dtype(self.model_config.dtype)
             torch.cuda.empty_cache()
             self.init_gpu_memory = torch.cuda.mem_get_info()[0]
+            print_gpu_memory("init")
         else:
             raise RuntimeError(
                 f"Not support device type: {self.device_config.device}")
@@ -157,6 +165,7 @@ class Worker(WorkerBase):
         # profiled peak memory.
         torch.cuda.synchronize()
         free_gpu_memory, total_gpu_memory = torch.cuda.mem_get_info()
+        print_gpu_memory("profile done")
         # NOTE(woosuk): Here we assume that the other processes using the same
         # GPU did not change their memory usage during the profiling.
         peak_memory = self.init_gpu_memory - free_gpu_memory

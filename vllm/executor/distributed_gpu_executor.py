@@ -7,9 +7,18 @@ from vllm.executor.gpu_executor import GPUExecutor
 from vllm.logger import init_logger
 from vllm.lora.request import LoRARequest
 from vllm.sequence import ExecuteModelRequest, SamplerOutput
+import torch
 
 logger = init_logger(__name__)
 
+
+def print_gpu_memory(stage):
+    logger.info(f'GPU memory at stage {stage}')
+    torch.cuda.synchronize()
+    n_gpus = torch.cuda.device_count()
+    for i in range(n_gpus):
+        free, total = torch.cuda.mem_get_info(i)
+        logger.info(f'\t GPU {i}: free {free} used {total-free} total {total}')
 
 class DistributedGPUExecutor(GPUExecutor):
     """Abstract superclass of multi-GPU executor implementations."""
@@ -59,9 +68,13 @@ class DistributedGPUExecutor(GPUExecutor):
         self.cache_config.num_gpu_blocks = num_gpu_blocks
         self.cache_config.num_cpu_blocks = num_cpu_blocks
 
+        print_gpu_memory("before cache init")
         self._run_workers("initialize_cache",
                           num_gpu_blocks=num_gpu_blocks,
                           num_cpu_blocks=num_cpu_blocks)
+        print_gpu_memory("after cache init")
+
+        
 
     def execute_model(
             self,
