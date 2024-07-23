@@ -1,5 +1,7 @@
 import asyncio
 import time
+import traceback
+import sys
 from functools import partial
 from typing import (AsyncIterator, Callable, Dict, Iterable, List, Optional,
                     Set, Tuple, Type, Union)
@@ -27,7 +29,6 @@ ENGINE_ITERATION_TIMEOUT_S = envs.VLLM_ENGINE_ITERATION_TIMEOUT_S
 
 class AsyncEngineDeadError(RuntimeError):
     pass
-
 
 def _raise_exception_on_finish(
         task: asyncio.Task, error_callback: Callable[[Exception],
@@ -152,10 +153,13 @@ class RequestTracker:
 
         return stream
 
-    def abort_request(self, request_id: str, *, verbose: bool = False) -> None:
+    def abort_request(self, request_id: str, *, verbose: bool = True) -> None:
         """Abort a request during next background loop iteration."""
         if verbose:
             logger.info("Aborted request %s.", request_id)
+
+        # Print stack trace
+        logger.info(f'Stack trace of the caller: {"".join(traceback.format_stack())}')
 
         self._finished_requests.put_nowait(request_id)
 
