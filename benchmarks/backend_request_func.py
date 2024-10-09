@@ -326,7 +326,7 @@ async def async_request_openai_chat_completions(
             "temperature": 0.0,
             "max_tokens": request_func_input.output_len,
             "stream": True,
-            "ignore_eos": request_func_input.ignore_eos,
+            # "ignore_eos": request_func_input.ignore_eos,
         }
         headers = {
             "Content-Type": "application/json",
@@ -342,7 +342,7 @@ async def async_request_openai_chat_completions(
         most_recent_timestamp = st
         try:
             async with session.post(url=api_url, json=payload,
-                                    headers=headers) as response:
+                                    headers=headers, verify_ssl=False) as response:
                 if response.status == 200:
                     async for chunk_bytes in response.content:
                         chunk_bytes = chunk_bytes.strip()
