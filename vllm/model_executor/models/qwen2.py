@@ -455,14 +455,36 @@ class Qwen2Model(nn.Module):
                     continue
                 name = name.replace(weight_name, param_name)
                 # Skip loading extra bias for GPTQ models.
-                if name.endswith(".bias") and name not in params_dict:
-                    continue
+                if name.endswith(".bias"):
+                    if name not in params_dict:
+                        # Try with .base_layer suffix for LoRA-wrapped parameters
+                        name_with_base = name[:-5] + ".base_layer.bias"
+                        if name_with_base in params_dict:
+                            name = name_with_base
+                        else:
+                            continue
                 if is_pp_missing_parameter(name, self):
                     continue
                 if name.endswith("scale"):
                     # Remapping the name of FP8 kv-scale.
                     name = maybe_remap_kv_scale_name(name, params_dict)
                     if name is None:
+                        continue
+                if name not in params_dict:
+                    # Try with .base_layer suffix for LoRA-wrapped parameters
+                    if name.endswith(".weight"):
+                        name_with_base = name[:-7] + ".base_layer.weight"
+                        if name_with_base in params_dict:
+                            name = name_with_base
+                        else:
+                            continue
+                    elif name.endswith(".bias"):
+                        name_with_base = name[:-5] + ".base_layer.bias"
+                        if name_with_base in params_dict:
+                            name = name_with_base
+                        else:
+                            continue
+                    else:
                         continue
                 param = params_dict[name]
                 weight_loader = getattr(param, "weight_loader", default_weight_loader)
@@ -473,7 +495,7 @@ class Qwen2Model(nn.Module):
                 break
             else:
                 # Skip loading extra bias for GPTQ models.
-                if name.endswith(".bias") and name not in params_dict:
+                if name.endswith(".bias"):
                     continue
                 # Remapping the name of FP8 kv-scale.
                 name = maybe_remap_kv_scale_name(name, params_dict)
@@ -481,6 +503,22 @@ class Qwen2Model(nn.Module):
                     continue
                 if is_pp_missing_parameter(name, self):
                     continue
+                if name not in params_dict:
+                    # Try with .base_layer suffix for LoRA-wrapped parameters
+                    if name.endswith(".weight"):
+                        name_with_base = name[:-7] + ".base_layer.weight"
+                        if name_with_base in params_dict:
+                            name = name_with_base
+                        else:
+                            continue
+                    elif name.endswith(".bias"):
+                        name_with_base = name[:-5] + ".base_layer.bias"
+                        if name_with_base in params_dict:
+                            name = name_with_base
+                        else:
+                            continue
+                    else:
+                        continue
                 param = params_dict[name]
                 weight_loader = getattr(param, "weight_loader", default_weight_loader)
                 weight_loader(param, loaded_weight)
