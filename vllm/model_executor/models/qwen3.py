@@ -149,13 +149,15 @@ class Qwen3Attention(nn.Module):
     ) -> torch.Tensor:
         qkv, _ = self.qkv_proj(hidden_states)
         q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
-        # Add qk-norm
-        q_by_head = q.view(*q.shape[:-1], q.shape[-1] // self.head_dim, self.head_dim)
+        # Add qk-norm — use unflatten/flatten to avoid symbolic shape
+        # arithmetic (*shape[:-1], shape[-1]//x) which breaks torch.compile
+        # with dynamic shapes.
+        q_by_head = q.unflatten(-1, (self.num_heads, self.head_dim))
         q_by_head = self.q_norm(q_by_head)
-        q = q_by_head.view(q.shape)
-        k_by_head = k.view(*k.shape[:-1], k.shape[-1] // self.head_dim, self.head_dim)
+        q = q_by_head.flatten(-2)
+        k_by_head = k.unflatten(-1, (self.num_kv_heads, self.head_dim))
         k_by_head = self.k_norm(k_by_head)
-        k = k_by_head.view(k.shape)
+        k = k_by_head.flatten(-2)
         q, k = self.rotary_emb(positions, q, k)
         attn_output = self.attn(q, k, v)
         output, _ = self.o_proj(attn_output)

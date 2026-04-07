@@ -9,7 +9,11 @@ import torch._dynamo
 import torch.fx as fx
 from torch.fx.experimental.proxy_tensor import make_fx
 
-from vllm.compilation.backends import _is_empty_allocation_node, split_graph
+from vllm.compilation.backends import (
+    _decompose_size_nodes,
+    _is_empty_allocation_node,
+    split_graph,
+)
 from vllm.compilation.passes.fx_utils import find_op_nodes
 
 # This import automatically registers `torch.ops.silly.attention`
@@ -571,6 +575,80 @@ def test_size_used_in_multiple_consumer_subgraphs():
     if isinstance(output_split, tuple):
         output_split = next(o for o in output_split if isinstance(o, torch.Tensor))
     assert torch.allclose(output_original, output_split), "Output mismatch after split"
+
+
+def test_indexed_size_users_are_rewritten_before_split():
+    """
+    Validates that x.size()[i] users are rewritten to the specific dim value
+    before the original size() node is erased.
+    """
+    captured_graph = None
+
+    def capturing_backend(gm: fx.GraphModule, example_inputs: list) -> fx.GraphModule:
+        nonlocal captured_graph
+        captured_graph = gm
+        return gm
+
+    def model_fn(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+        shape = x.size()
+        batch = shape[0]
+        width = shape[1]
+        z = torch.ops.aten.sigmoid.default(x)
+        return y.view(batch, width) + z
+
+    x = torch.randn(4, 8)
+    y = torch.randn(4, 8)
+    torch._dynamo.mark_dynamic(x, 0)
+    torch._dynamo.mark_dynamic(y, 0)
+    torch.compile(model_fn, backend=capturing_backend)(x, y)
+
+    split_graph(captured_graph, ["aten::sigmoid"])
+
+    size_nodes = [
+        node
+        for node in captured_graph.graph.nodes
+        if node.op == "call_method" and node.target == "size"
+    ]
+    assert len(size_nodes) == 0, "size() nodes should be fully decomposed"
+    for node in captured_graph.graph.nodes:
+        if node.op == "call_function" and node.target == operator.getitem:
+            if (
+                isinstance(node.args[0], fx.Node)
+                and node.args[0].op == "call_method"
+                and node.args[0].target == "size"
+            ):
+                pytest.fail(f"getitem still consumes size node: {node}")
+
+
+def test_decompose_size_nodes_handles_slice_and_method_getitem():
+    """
+    Validates that direct FX users such as size()[:-1] and size().__getitem__(-1)
+    are rewritten before erasing the original size() node.
+    """
+    graph = fx.Graph()
+    x = graph.placeholder("x")
+    x.meta["example_value"] = torch.randn(4, 8)
+    size = graph.call_method("size", args=(x,))
+    prefix = graph.call_function(
+        operator.getitem, args=(size, slice(None, -1, None))
+    )
+    width = graph.call_method("__getitem__", args=(size, -1))
+    graph.output((prefix, width))
+
+    gm = fx.GraphModule({}, graph)
+    _decompose_size_nodes(gm)
+
+    for node in gm.graph.nodes:
+        assert not (node.op == "call_method" and node.target == "size"), (
+            f"size() node survived decomposition: {node}"
+        )
+        if "getitem" in str(node.target):
+            assert not (
+                len(node.args) >= 1
+                and isinstance(node.args[0], fx.Node)
+                and node.args[0].op == "call_method"
+                and node.args[0].target == "size"
+            ), f"getitem still consumes size node: {node}"
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")

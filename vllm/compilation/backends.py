@@ -486,7 +486,19 @@ def _decompose_size_nodes(graph: fx.GraphModule) -> None:
     # Dynamo captures x.size()/x.shape as call_method target="size".
     size_nodes = list(graph.graph.find_nodes(op="call_method", target="size"))
 
+    def _is_getitem_user(size_node: fx.Node, user: fx.Node) -> bool:
+        if len(user.args) < 2 or user.args[0] is not size_node:
+            return False
+        if user.op == "call_method":
+            return user.target == "__getitem__"
+        if user.op != "call_function":
+            return False
+        return getattr(user.target, "__name__", None) == "getitem"
+
     for node in size_nodes:
+        # x.size(dim) returns a scalar, not a torch.Size — skip it.
+        if len(node.args) > 1:
+            continue
         tensor_node = node.args[0]
         ev = tensor_node.meta.get("example_value")
         assert ev is not None, (
@@ -514,17 +526,43 @@ def _decompose_size_nodes(graph: fx.GraphModule) -> None:
                         f"'{node.name}'"
                     )
 
-        # Replace size node in each user's args.
-        # Dynamo always passes size as a direct arg: view(clone, size)
-        # → view(clone, d0, d1, ...)
+        size_tuple = tuple(dims)
+
+        # Resolve indexed uses like size()[0] or size()[:-1] first. Those users
+        # should become direct references to the selected dims, not expanded
+        # tuples or lingering size-node users.
         for user in list(node.users):
-            new_args = []
-            for arg in user.args:
-                if arg is node:
-                    new_args.extend(dims)
-                else:
-                    new_args.append(arg)
-            user.args = tuple(new_args)
+            if _is_getitem_user(node, user):
+                idx = user.args[1]
+                try:
+                    replacement = size_tuple[idx]
+                except TypeError as exc:
+                    raise AssertionError(
+                        f"Unsupported index type {type(idx)} into size node "
+                        f"'{node.name}' for user '{user.name}'."
+                    ) from exc
+                for grand_user in list(user.users):
+                    grand_user.args = fx.map_arg(
+                        grand_user.args,
+                        lambda arg: replacement if arg is user else arg,
+                    )
+                    grand_user.kwargs = fx.map_arg(
+                        grand_user.kwargs,
+                        lambda arg: replacement if arg is user else arg,
+                    )
+                graph.graph.erase_node(user)
+
+        # Replace remaining whole-size users recursively in args/kwargs so
+        # nested tuple/list consumers are handled in addition to flat args.
+        for user in list(node.users):
+            user.args = fx.map_arg(
+                user.args,
+                lambda arg: size_tuple if arg is node else arg,
+            )
+            user.kwargs = fx.map_arg(
+                user.kwargs,
+                lambda arg: size_tuple if arg is node else arg,
+            )
         graph.graph.erase_node(node)
 
 
@@ -548,7 +586,7 @@ def split_graph(
         if node.op == "call_function" and node.target == operator.getitem:
             # Assign this getitem to the same subgraph as its input
             input_node = node.args[0]
-            if input_node.op != "placeholder":
+            if isinstance(input_node, fx.Node) and input_node.op != "placeholder":
                 assert input_node in node_to_subgraph_id
                 node_to_subgraph_id[node] = node_to_subgraph_id[input_node]
                 continue
